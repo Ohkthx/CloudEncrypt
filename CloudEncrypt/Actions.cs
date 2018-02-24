@@ -7,13 +7,24 @@ using System.Text;
 
 namespace CloudEncrypt
 {
+    public enum Action {  None, Encrypt, Decrypt };
+
     public static class Actions
     {
         private static Hash m_eHash;    // Hash for encrypting.
         private static Hash m_dHash;    // Hash for decrypting.
+        private static Rfc2898DeriveBytes key;
         public static bool m_isWindows;
+        public static string m_outputDirectory;
+        public static int m_offset = 1;
 
         #region Miscellaneous
+        public static void HashReset()
+        {
+            m_dHash = null;
+            m_eHash = null;
+        }
+
         public static string GetOffset(int offset)
         {
             string os = string.Empty;
@@ -116,6 +127,7 @@ namespace CloudEncrypt
         }
         #endregion
 
+        #region GetHash
         public static void GetHash(out Hash hash)
         {
             hash = new Hash(AskPassword());
@@ -130,6 +142,7 @@ namespace CloudEncrypt
         {
             hash = new Hash(AskPassword(offset), salt);
         }
+        #endregion
 
         #region Lockfile
         public static bool CreateLockFile()
@@ -143,7 +156,7 @@ namespace CloudEncrypt
                         fs.Write(data, 0, data.Length);
 
                 // Encrypt and remove the original lock file.
-                EncryptFile(lockFile);
+                EncryptFile(lockFile, Directory.GetCurrentDirectory());
                 if (File.Exists(lockFile))
                     File.Delete(lockFile);
 
@@ -176,13 +189,16 @@ namespace CloudEncrypt
             AES.Padding = PaddingMode.PKCS7;
             AES.Mode = CipherMode.CBC;
 
-            using (FileStream encryptedFileStream = new FileStream(lockFile, FileMode.Open))
+            using (FileStream fsCrypt = new FileStream(lockFile, FileMode.Open))
             {
                 byte[] salt = new byte[Hash.m_SaltSize];
-                encryptedFileStream.Read(salt, 0, Hash.m_SaltSize);
+                fsCrypt.Read(salt, 0, Hash.m_SaltSize);
 
                 if (m_dHash == null)
                     GetHash(salt, 2, out m_dHash);
+
+                Console.WriteLine("\tDEBUG ReadLockFile:\n\t\tObtained Salt: {0}\n\t\tHash: {1}", Encoding.UTF8.GetString(salt), m_dHash.ToString());
+
 
                 Rfc2898DeriveBytes key = m_dHash.GetDerivedBytes();
                 AES.Key = key.GetBytes(AES.KeySize / 8);
@@ -193,7 +209,7 @@ namespace CloudEncrypt
 
                 try
                 {
-                    using (CryptoStream cs = new CryptoStream(encryptedFileStream, AES.CreateDecryptor(), CryptoStreamMode.Read))
+                    using (CryptoStream cs = new CryptoStream(fsCrypt, AES.CreateDecryptor(), CryptoStreamMode.Read))
                     using (MemoryStream ms = new MemoryStream())
                     {
                         byte[] buffer = new byte[1048576];
@@ -222,14 +238,34 @@ namespace CloudEncrypt
         #endregion
 
         #region Encrypt/Decrypt
-        public static void EncryptFile(string ifile)
+        /// <summary>
+        ///     Encrypts a file and stores it in the opath (destination directory).
+        /// </summary>
+        /// <param name="ifile">input file that is to be processed.</param>
+        /// <param name="opath">output file destination (directory)</param>
+        public static void EncryptFile(string ifile, string opath)
         {
-            if (m_eHash == null)
+            if (m_eHash == null && m_dHash != null)
             {
+                Console.WriteLine("\tDEBUG EncryptFile:\n\t\tGetting new eHash w/ dHash salt\n\t\tdHash: {0}\n\t\tSalt: {1}", m_dHash.ToString(), Encoding.UTF8.GetString(m_dHash.GetSalt()));
+                //GetHash(m_dHash.GetSalt(), out m_eHash);
+                m_eHash = m_dHash;
+                Console.WriteLine("\tDEBUG EncryptFile:\n\t\teHash: {0}", m_eHash.ToString());
+            }
+            else if (m_eHash == null)
+            {
+                Console.WriteLine("\tDEBUG EncryptFile:\n\t\tGetting new eHash.");
                 GetHash(out m_eHash);
+                Console.WriteLine("\tDEBUG EncryptFile:\n\t\teHash: {0}\n\t\tSalt: {1}", m_eHash.ToString(), Encoding.UTF8.GetString(m_eHash.GetSalt()));
             }
 
-            using (FileStream fsCrypt = new FileStream(ifile + ".lck", FileMode.Create))
+            string ifileName = Path.GetFileName(ifile);
+            string ofullpath = Path.Combine(opath, ifileName + ".lck");
+
+            // Create our directory if it doesn't exist already.
+            Program.CreateDirectory(Path.GetDirectoryName(ofullpath));
+
+            using (FileStream fsCrypt = new FileStream(ofullpath, FileMode.Create))
             {
                 RijndaelManaged AES = new RijndaelManaged();
                 AES.KeySize = 256;
@@ -243,6 +279,7 @@ namespace CloudEncrypt
                 AES.Mode = CipherMode.CBC;
 
                 fsCrypt.Write(m_eHash.GetSalt(), 0, Hash.m_SaltSize);
+                Console.WriteLine("\tDEBUG EncryptFile:\n\t\tSalt: {0}", Encoding.UTF8.GetString(m_eHash.GetSalt()));
 
                 using (CryptoStream cs = new CryptoStream(fsCrypt, AES.CreateEncryptor(), CryptoStreamMode.Write))
                 using (FileStream fsIn = new FileStream(ifile, FileMode.Open))
@@ -254,9 +291,19 @@ namespace CloudEncrypt
                         cs.Write(buffer, 0, read);
                 }
             }
+
+            m_eHash.KeyReset();
+            m_dHash.KeyReset();
         }
 
-        public static bool DecryptFile(string ifile)
+        /// <summary>
+        ///     Decrypts a file and saves it to the opath destination.
+        /// </summary>
+        /// <param name="ifile">file to be decrypted.</param>
+        /// <param name="backup">location of encrypted files.</param>
+        /// <param name="oroot">targeted root directory to save decrypted file in.</param>
+        /// <returns>a bool if it succeeded or not.</returns>
+        public static bool DecryptFile(string ifile, string backup, string oroot)
         {
             RijndaelManaged AES = new RijndaelManaged();
             AES.KeySize = 256;
@@ -266,47 +313,76 @@ namespace CloudEncrypt
 
             using (FileStream fsCrypt = new FileStream(ifile, FileMode.Open))
             {
-                // Create our buffer for extracting our salt from the file.
                 byte[] salt = new byte[Hash.m_SaltSize];
                 fsCrypt.Read(salt, 0, Hash.m_SaltSize);
 
                 if (m_dHash == null)
                     GetHash(salt, 2, out m_dHash);
 
+                Console.WriteLine("\tDEBUG DecryptFile:\n\t\tSalt Obtained: {0}\n\t\tHash: {1}", Encoding.UTF8.GetString(salt), m_dHash.ToString());
+
+
                 Rfc2898DeriveBytes key = m_dHash.GetDerivedBytes();
                 AES.Key = key.GetBytes(AES.KeySize / 8);
                 AES.IV = key.GetBytes(AES.BlockSize / 8);
 
+                string cleanedPath = CleanBackup(ifile, backup);
+                string filename = Path.GetFileName(CleanExtension(ifile));
+                string subchild = Path.Combine(cleanedPath, filename);
+                string outFile = Path.GetFullPath(oroot + subchild);
+
+                // Create our directory for the file if it doesn't exist.
+                Program.CreateDirectory(Path.GetFullPath(oroot + cleanedPath));
+
                 try
                 {
                     using (CryptoStream cs = new CryptoStream(fsCrypt, AES.CreateDecryptor(), CryptoStreamMode.Read))
-                    using (FileStream newFS = new FileStream(ifile + ".decrypted", FileMode.Create))
+                    using (FileStream fs = new FileStream(outFile, FileMode.Create))
                     {
                         byte[] buffer = new byte[1048576];
                         int read;
 
                         while ((read = cs.Read(buffer, 0, buffer.Length)) > 0)
                         {
-                            newFS.Write(buffer, 0, read);
+                            fs.Write(buffer, 0, read);
                         }
                     }
 
+                    m_dHash.KeyReset();
                     return true;
                 }
-                catch (CryptographicException)
+                catch (CryptographicException ce)
                 {
-                    Console.WriteLine("  [ERR] Bad password provided.");
+                    Console.WriteLine(Error.Print(m_offset, "Potential password issue", ce));
                 }
                 catch (Exception e)
                 {
-                    Console.WriteLine(" [ERR] Unknown issue:\n\t{0}", e.Message);
+                    Console.WriteLine(Error.Print(m_offset, "Unknown issue occured", e));
                 }
 
-                if (File.Exists(ifile + ".decrypted"))
-                    File.Delete(ifile + ".decrypted");
-
+                m_dHash.KeyReset();
                 return false;
             }
+        }
+
+        private static string CleanBackup(string filename, string backupRoot)
+        {
+            try
+            {
+                int index = filename.IndexOf(backupRoot);
+                string path = (index < 0) ? filename : filename.Remove(index, backupRoot.Length);
+                return Path.GetDirectoryName(path);
+            }
+            catch (ArgumentException ae)
+            {
+                Console.WriteLine(Error.Print(m_offset, "Attempted to clean backup", ae));
+            }
+            return filename;
+        }
+
+        private static string CleanExtension(string filename)
+        {
+            return (Path.GetExtension(filename) == ".lck") ? Path.GetFileNameWithoutExtension(filename) : filename;
         }
         #endregion
 
@@ -385,7 +461,8 @@ namespace CloudEncrypt
 
             try
             {
-                FileAttributes attr = File.GetAttributes(directory);
+                string dir = Path.GetFullPath(directory);
+                FileAttributes attr = File.GetAttributes(dir);
 
                 if ((attr & FileAttributes.Directory) != FileAttributes.Directory)
                     throw new Exception("Supplied path is not a directory.");
@@ -406,11 +483,13 @@ namespace CloudEncrypt
         #endregion
 
         /// <summary>
-        ///     Takes an incoming path to check and and outgoing path to save/modify.
+        ///     Processes a root directory and all sub-directories and files.
         /// </summary>
+        /// <param name="action">Action: None, Encrypt, or Decrypt.</param>
+        /// <param name="backup">backup directory used to either store data or retrieve it.</param>
         /// <param name="ipath">input path or file to process.</param>
-        /// <param name="opath">output path (destination) for post-modification.</param>
-        public static void ProcessPath(string ipath, string opath)
+        /// <param name="oroot">output's root directory.</param>
+        public static void ProcesssRoot(Action action, string backup, string ipath, string oroot)
         {
             try
             {
@@ -420,26 +499,21 @@ namespace CloudEncrypt
                 // If it is a directory, get files sub-files and process the sub directories.
                 if ((attr & FileAttributes.Directory) == FileAttributes.Directory)
                 {
-                    if (Directory.Exists(opath))
-                    {
-                        
-                    }
-
                     try
                     {
                         string[] items = Directory.GetFiles(ipath);
 
                         foreach (string item in items)
                         {
-                            Console.WriteLine(" > File: {0}", item);
-                            ProcessPath(item, opath);
+                            //Console.WriteLine(" > File: {0}", item);
+                            ProcesssRoot(action, backup, item, oroot);
                         }
 
                         string[] dirs = Directory.GetDirectories(ipath);
                         foreach(string dir in dirs)
                         {
-                            Console.WriteLine(" > Dir:  {0}", dir);
-                            ProcessPath(dir, opath);
+                            //Console.WriteLine(" > Dir:  {0}", dir);
+                            ProcesssRoot(action, backup, dir, oroot);
                         }
                     }
                     catch (Exception e)
@@ -449,7 +523,16 @@ namespace CloudEncrypt
                 {   // It is a Normal file and not a Directory, do some voodoo.
                     try
                     {
-                        Console.WriteLine("*DOING VOODOO*");
+                        if (action == Action.Encrypt)
+                        {   // Create the directory and encrypt.
+                            string getoutputdir = Program.GetOutputDirectory(oroot, ipath);
+                            Actions.EncryptFile(ipath, getoutputdir);
+                        }
+                        else if (action == Action.Decrypt)
+                        {   // Get proper output directory.
+                            Actions.DecryptFile(ipath, backup, oroot);
+                        }
+
                     }
                     catch (Exception e)
                     {
@@ -459,11 +542,11 @@ namespace CloudEncrypt
             }
             catch (DirectoryNotFoundException)
             {
-                Console.WriteLine($" [ERR] Directory: {ipath} not found- ignoring.");
+                Console.WriteLine(Error.Print(m_offset, $"Path not found: {ipath}, ignoring."));
             }
             catch (Exception e)
             {
-                Console.WriteLine("Something unimaginable happened!\n Message: \n  {0}", e.Message);
+                Console.WriteLine(Error.Print(m_offset, "Something occurred that shouldn't have", e));
             }
         }
     }

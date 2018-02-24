@@ -15,6 +15,7 @@ namespace CloudEncrypt
         private byte[] m_Hash;
 
         private Rfc2898DeriveBytes m_pbkdf2;
+        private Rfc2898DeriveBytes m_backup;
 
         #region Constructors
         public Hash(string input)
@@ -87,6 +88,8 @@ namespace CloudEncrypt
         {
             // Create our bash hash in bytes.
             m_pbkdf2 = new Rfc2898DeriveBytes(input, salt, 10000);
+            if (m_backup == null)
+                m_backup = m_pbkdf2;
 
             this.m_Salt = salt;
             this.m_Key = this.m_pbkdf2.GetBytes(size);
@@ -122,6 +125,16 @@ namespace CloudEncrypt
         public byte[] GetSalt()
         {
             return this.m_Salt;
+        }
+
+        public bool KeyReset()
+        {
+            if (this.m_backup != null)
+            {
+                this.m_pbkdf2 = this.m_backup;
+                return true;
+            }
+            return false;
         }
 
         public Rfc2898DeriveBytes GetDerivedBytes()

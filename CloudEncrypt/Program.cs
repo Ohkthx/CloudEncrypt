@@ -40,15 +40,16 @@ namespace CloudEncrypt
         }
 
         static void TEST(bool test)
-        {
+        {   // DO NOT PUT PERSONAL INFO IN HERE FOR TESTING.
             if (!test)
                 return;
 
-            if (Actions.AskYesNo("Like pie?", 2))
-                Console.WriteLine("Likes pie.");
+            string bud = m_Settings.BackupDirectory;
+            string dr1 = m_Settings.DirectoryRoots[0];
+            string ex = Path.Combine(dr1,"somefile.txt");
 
-            if (Actions.AskYesNo("like potato?"))
-                Console.WriteLine("Likes potato");
+
+            Console.WriteLine("Backup: {0}, File: {1}\n Result: {2}", bud, ex, GetOutputDirectory(bud, ex));
         }
 
         /// <summary>
@@ -71,20 +72,27 @@ namespace CloudEncrypt
                         break;
                     case "check":
                         break;
+
                     case "encrypt":
+                        EncryptTree();
                         break;
+
                     case "decrypt":
+                        DecryptTree();
                         break;
+
                     case "purge-local":
                         break;
                     case "tree":
                         PrintTree();
                         break;
+
                     case "ls":
                     case "dirs":
                     case "directories":
                         PrintDirectories();
                         break;
+
                     case "dir-add":
                     case "directory-add":
                         AddDirectory(ref m_Settings);
@@ -92,6 +100,7 @@ namespace CloudEncrypt
                         SaveSettings(m_Settings);
                         Console.WriteLine();
                         break;
+
                     case "dir-dest":
                     case "directory-dest":
                         NewBackupDirectory(ref m_Settings);
@@ -99,6 +108,7 @@ namespace CloudEncrypt
                         SaveSettings(m_Settings);
                         Console.WriteLine();
                         break;
+
                     case "exit":
                         return;
                     case "help":
@@ -179,13 +189,39 @@ namespace CloudEncrypt
             Console.WriteLine();
         }
 
+        private static void EncryptTree()
+        {
+            Actions.m_offset = 2;
+            Console.WriteLine("\n{0}Encrypting all selected directories.", Actions.GetOffset(m_offset));
+            foreach (string root in m_Settings.DirectoryRoots)
+                Actions.ProcesssRoot(Action.Encrypt, m_Settings.BackupDirectory, root, m_Settings.BackupDirectory);
+            Console.WriteLine();
+        }
+
+        private static void DecryptTree()
+        {
+            Actions.m_offset = 2;
+            string root = m_Settings.BackupDirectory;
+            Console.WriteLine("\n{0}Decrypting all selected directories.", Actions.GetOffset(m_offset));
+
+            if (string.IsNullOrEmpty(m_Settings.DecryptRootDirectory))
+            {
+                m_Settings.DecryptRootDirectory = Program.AskOutputDirectory();
+                Actions.m_outputDirectory = m_Settings.DecryptRootDirectory;
+            }
+
+            Actions.ProcesssRoot(Action.Decrypt, m_Settings.BackupDirectory, root, m_Settings.DecryptRootDirectory);
+
+            Console.WriteLine();
+        }
+
         private static void PrintTree()
         {
             Console.WriteLine("\n{0}Tree: ", Actions.GetOffset(m_offset));
             foreach(string dir in m_Settings.DirectoryRoots)
             {
                 Console.WriteLine($"{Actions.GetOffset(m_offset +1)}{dir}");
-                Actions.ProcessPath(dir, m_Settings.BackupDirectory);
+                Actions.ProcesssRoot(Action.None, m_Settings.BackupDirectory, dir, m_Settings.BackupDirectory);
             }
             Console.WriteLine();
         }

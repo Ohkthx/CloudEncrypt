@@ -10,8 +10,9 @@ namespace CloudEncrypt
     // Settings that will be store inside 'settings.json' that will be loaded.
     class Settings
     {
+        public string BackupDirectory { get; set; } = Path.GetFullPath(@"C:\Backup\");
+        public string DecryptRootDirectory { get; set; } = Path.GetFullPath(@"C:\Decrypt\");
         public IList<string> DirectoryRoots { get; set; } = new List<string>();
-        public string BackupDirectory { get; set; } = @"C:\Backup\";
         public Tuple<string, string> Hashes { get; set; }
     }
 
@@ -123,6 +124,15 @@ namespace CloudEncrypt
                     throw new BadSettingsException("'settings.json': BackupDirectory does not contain a root directory such as 'C:\\'");
                 else if (!Actions.IsValidBackup(m_Settings.DirectoryRoots, m_Settings.BackupDirectory))
                     throw new BadSettingsException("'settings.json': BackupDirectoy path not found or is included in a DirectoryRoots path.");
+
+                if (string.IsNullOrEmpty(m_Settings.DecryptRootDirectory))
+                    throw new BadSettingsException("'settings.json': DecryptRootDirectory not set.");
+                else if (!Path.IsPathRooted(m_Settings.DecryptRootDirectory))
+                    throw new BadSettingsException("'settings.json': DecryptRootDirectory does not contain a root directory such as 'C:\\");
+                else if (!Actions.IsValidBackup(m_Settings.DirectoryRoots, m_Settings.DecryptRootDirectory))
+                    throw new BadSettingsException("'settings.json': DecryptRootDirectory path not found or is included DirectoryRoots path.");
+                else if (Path.GetFullPath(m_Settings.BackupDirectory) == Path.GetFullPath(m_Settings.DecryptRootDirectory))
+                    throw new BadSettingsException("'settings.json': BackupDirectory and DecryptRootDirectory both set to the same path.");
             }
             catch (JsonReaderException jre)
             {
@@ -133,9 +143,9 @@ namespace CloudEncrypt
             catch (BadSettingsException bse)
             {
                 // TODO: If missing a BackupDirectory -> prompt for a new one? Could be done above.
-                Console.WriteLine("\n [ERR] Loading settings:\n\t{0}", bse.Message);
+                Console.WriteLine(Error.Print(m_offset, "Settings issue", bse));
                 if ((m_Settings.BackupDirectory = ReplaceDirectory(true, m_Settings.BackupDirectory)) == string.Empty)
-                {  // User opt'd to not update. Return a
+                {  // User opt'd to not update.
                     return false;
                 }
             }
@@ -186,6 +196,31 @@ namespace CloudEncrypt
         #endregion
 
         #region Directory Actions
+        public static string AskOutputDirectory()
+        {   // Prompts the user for a directory to be used for sending decrypted information to.
+            string offsetP = Actions.GetOffset(m_offset);
+            do
+            {
+                string input = Actions.AskString("Type or paste a directory you wish output information to", m_offset);
+                if (string.IsNullOrEmpty(input))
+                {   // Return early if it is empty (user doesn't want to update/add.)
+                    Console.WriteLine(offsetP + "[ ! ] Empty directory name, try again.");
+                    continue;
+                }
+                else if (!Actions.ValidateDirectory(input))
+                {   // Not a valid directory provided, try again.
+                    Console.WriteLine(offsetP + "[ ! ] Directory is invalid. Either no root directory provided or it doesn't exist.");
+                    continue;
+                }
+                else
+                {
+                    return Path.GetFullPath(input);
+                }
+
+
+            } while (true);
+        }
+
         public static bool NewBackupDirectory(ref Settings settings)
         {
             string offsetP = Actions.GetOffset(m_offset);
@@ -205,7 +240,7 @@ namespace CloudEncrypt
                 if (Actions.IsValidBackup(m_Settings.DirectoryRoots, newDir))
                 {   // Is valid, passes final test. Return success.
                     Console.WriteLine(offsetP + "[ ! ] Backup Destination Directory updated.");
-                    settings.BackupDirectory = Path.GetFullPath(newDir);
+                    settings.BackupDirectory = newDir;
                     return true;
                 }
                 else
@@ -276,6 +311,44 @@ namespace CloudEncrypt
 
 
             } while (true);
+        }
+
+        /// <summary>
+        ///     Returns a directory that includes the @base + directory that includes ifile.
+        /// </summary>
+        /// <param name="base">root directory to extend from.</param>
+        /// <param name="ifile">input file with full path to extract from.</param>
+        /// <returns>a full path to the parent directory of the input file with base being the root</returns>
+        public static string GetOutputDirectory(string @base, string ifile)
+        {
+            try
+            {
+                // Get the attributes of this path.
+                FileAttributes attr = File.GetAttributes(ifile);
+
+                // Get the root of the input file.
+                string root = Path.GetPathRoot(ifile);
+                int index = ifile.IndexOf(root);
+
+                // Remove the root from the input file. (Most likely C:\ or something similar.)
+                string path = (index < 0) ? ifile : ifile.Remove(index, root.Length);
+
+                // Concatenate the two paths and return.
+                if ((attr & FileAttributes.Directory) == FileAttributes.Directory)
+                    return Path.Combine(@base, Path.GetFullPath(path));
+                else
+                    return Path.Combine(@base, Path.GetDirectoryName(path));
+            }
+            catch (Exception e)
+            {   // TODO: Handle exception better.
+                Console.WriteLine(Error.Print(m_offset, "Attempted to get new Output Directory", e));
+            }
+            return @base;
+        }
+
+        public static void CreateDirectory(string directory)
+        {
+            Directory.CreateDirectory(Path.GetFullPath(directory));
         }
 
         public static void CreateDirectory(string backup, string pathToCreate)
